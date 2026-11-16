@@ -1,0 +1,73 @@
+# Your predefined details. The apply engine fills forms from this file.
+# The app copies this to config/profile.yaml on first run. Uploading a resume fills most of it automatically,
+# and anything in info.txt (project root) wins over this file. Edit here or in the dashboard (Profile tab).
+
+personal:
+  full_name: ""
+  first_name: ""
+  last_name: ""
+  email: ""                  # the inbox companies will write to (use the same one as IMAP_USER for the Tracker)
+  phone: ""                  # 10 digits, no country code
+  phone_country_code: "+91"
+  city: ""                   # e.g. Mumbai
+  state: ""                  # e.g. Maharashtra
+  country: India
+  pincode: ""
+  linkedin: ""
+  github: ""
+  portfolio: ""
+  nationality: Indian
+  languages: English, Hindi
+
+work:
+  current_company: ""        # leave blank if fresher
+  current_title: ""
+  years_experience: 0
+  notice_period: Immediate   # e.g. "30 days"
+  earliest_start: Immediately
+  current_ctc_lpa: ""        # in lakhs per annum, e.g. 6
+  expected_ctc_lpa: ""       # e.g. 12
+  expected_salary_abroad: Open to discuss
+  willing_to_relocate: true
+  previous_employers: []     # companies you worked at (answers "have you worked for us before?")
+  right_to_work_basis: Citizen
+  ok_onsite: true
+  remote_anywhere_ok: true
+  authorized_abroad: false        # authorised to work outside India without a visa?
+  needs_sponsorship_abroad: true
+
+education:
+  degree: ""                 # e.g. B.Tech
+  field: ""                  # e.g. Computer Engineering
+  university: ""
+  graduation_year: ""
+  cgpa: ""
+
+eeo:                          # US-style diversity questions. Defaults decline.
+  gender: Prefer not to say
+  pronouns: Prefer not to say
+  race: Decline to self-identify
+  hispanic: Decline to self-identify
+  veteran: I am not a protected veteran
+  disability: I do not wish to answer
+
+answers_defaults:
+  how_heard: Company careers page
+  referral: ""               # name / email of a referrer, if you have one
+  pitch: ""                  # 2-3 sentences for "why you / why us" questions when no LLM is set; {company} and {role} get filled in
+
+# Your own answers to specific questions. The label is matched loosely.
+answers:
+  "Why are you interested in this role?": ""
+
+# What to search for and where.
+search:
+  target_titles: []           # empty = guessed from your resume, e.g. ["Software Engineer", "Backend Engineer"]
+  experience: null            # fresher | experienced | null (derive from resume)
+  india: true                 # onsite/hybrid roles in India
+  preferred_cities: []        # e.g. ["Mumbai", "Pune", "Bengaluru"]; empty = all of India
+  remote_india: true
+  remote_worldwide: true
+  abroad: []                  # e.g. ["Singapore", "Dubai", "Germany"]
+  exclude_keywords: [sales, nurse, driver, accountant, teacher, marketing manager]
+  exclude_companies: []

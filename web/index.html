@@ -1,0 +1,660 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JobAutomater</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/app.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+</head>
+<body x-data="app()" x-init="init()">
+
+<!-- ================= top bar ================= -->
+<div class="top">
+  <div class="brand"><div class="mark">◎</div><span>Job<b>Automater</b></span></div>
+  <nav class="nav">
+    <template x-for="t in [['today','Today'],['jobs','Jobs'],['applications','Applications'],['tracker','Tracker'],['live','Live'],['resume','Resume'],['profile','Profile'],['settings','Settings']]">
+      <button :class="{on: tab===t[0]}" @click="go(t[0])"><span x-text="t[1]"></span>
+        <template x-if="t[0]==='applications' && needsYou"><span class="dot" x-text="needsYou"></span></template>
+        <template x-if="t[0]==='live' && sessions.length"><span class="dot" style="background:#e74c3c" x-text="sessions.length"></span></template>
+      </button>
+    </template>
+  </nav>
+  <label class="switch" title="Auto-apply picks the best new jobs and applies within your daily cap">
+    <input type="checkbox" :checked="state.settings?.auto_apply_enabled" @change="toggleAuto($event.target.checked)"><span class="t"></span>Auto-apply
+  </label>
+  <div class="pill-stat" x-text="`${state.submitted_today||0}/${state.settings?.daily_apply_cap||25} today`"></div>
+</div>
+
+<div class="page">
+
+<!-- setup banners -->
+<template x-if="!state.resume?.file && tab!=='resume'">
+  <div class="banner-warn"><b>Start here:</b> upload your resume so jobs can be ranked for you. <button class="btn small dark" @click="go('resume')">Upload resume</button></div>
+</template>
+<template x-if="state.resume?.file && !state.profile_ready && tab!=='resume'">
+  <div class="banner-warn"><b>Almost there:</b> fill in your email and phone under Profile before applying. <button class="btn small" @click="go('profile')">Open</button></div>
+</template>
+
+
+<!-- ================= TODAY: Start -> Apply -> done ================= -->
+<section x-show="tab==='today'" x-cloak>
+  <template x-if="state.resume?.file && ((state.profile_missing||[]).length || !state.signin?.last)">
+    <div class="card pad col" style="margin-bottom:16px;gap:10px">
+      <b>Do this once and you never type it again</b>
+      <template x-if="(state.profile_missing||[]).length">
+        <div class="col" style="gap:8px">
+          <div class="small muted">Everything else was read from your resume. These aren't on it:</div>
+          <div class="pf-grid">
+            <template x-for="m in (pfQuick||[])">
+              <label class="pf-field blank"><span class="tiny" x-text="m.label"></span><input class="input small" x-model="m.value" :placeholder="m.path==='personal.date_of_birth'?'DD/MM/YYYY':m.path==='work.expected_ctc_lpa'?'Lakhs per year, e.g. 8':''"></label>
+            </template>
+          </div>
+          <div class="row"><button class="btn dark small" @click="saveQuick()">Save</button><a class="tiny" href="#" @click.prevent="go('profile')">See all details</a></div>
+        </div>
+      </template>
+      <div class="row" style="gap:10px;flex-wrap:wrap" x-show="!state.signin?.last">
+        <div class="small grow" style="min-width:220px">Many career sites ask you to <b>sign in with Google</b>. Sign in once in the app's browser, and it presses “Continue with Google” for you after that.</div>
+        <button class="btn small" @click="signIn()">Sign in to Google once</button>
+      </div>
+    </div>
+  </template>
+  <div class="card pad today-hero">
+    <div>
+      <div class="label" x-text="new Date().toLocaleDateString('en-IN', {weekday:'long', day:'numeric', month:'long'})"></div>
+      <h1 class="h1" style="margin-top:6px" x-show="tdPhase==='start'">Ready for today? <span class="hl">Press Start.</span></h1>
+      <h1 class="h1" style="margin-top:6px" x-show="tdPhase==='searching'">Looking for <span class="hl">today's roles…</span></h1>
+      <h1 class="h1" style="margin-top:6px" x-show="tdPhase==='pick'"><span x-text="td.jobs.length"></span> fresh roles <span class="hl">you haven't applied to.</span></h1>
+      <h1 class="h1" style="margin-top:6px" x-show="tdPhase==='applying' && !tdDone">Applying <span class="hl">for you now.</span></h1>
+      <h1 class="h1" style="margin-top:6px" x-show="tdPhase==='applying' && tdDone">Done for the day. <span class="hl">See you tomorrow.</span></h1>
+      <div class="muted" style="margin-top:8px" x-show="tdPhase==='start'">Start searches every source for roles posted today, then lists the ones you haven't applied to. One more press applies to all of them.</div>
+      <div class="muted" style="margin-top:8px" x-show="tdPhase==='searching'">
+        <span x-show="tdProgress" x-text="tdProgress ? `${tdProgress.done} of ${tdProgress.total} sources checked` : ''"></span>
+        <span x-show="!tdProgress">Checking company career pages and job boards. This takes a few minutes.</span>
+      </div>
+      <div class="muted" style="margin-top:8px" x-show="tdPhase!=='start' && tdPhase!=='searching'">
+        <span x-text="`${td.sent_today} sent today · ${tdRoom} left under your daily cap of ${td.cap}`"></span>
+        <span x-show="td.discovery"> · searched <span x-text="ago(td.discovery?.at)"></span></span>
+      </div>
+    </div>
+    <div class="row" style="gap:10px">
+      <button class="btn blue big-btn" x-show="tdPhase==='start'" @click="todayStart()">Start</button>
+      <button class="btn big-btn" x-show="tdPhase==='searching'" disabled><span class="spinner"></span> Searching</button>
+      <template x-if="tdPhase==='pick'">
+        <div class="col" style="align-items:flex-end;gap:8px">
+          <button class="btn blue big-btn" @click="todayApply()" :disabled="!tdCount || !tdRoom" x-text="tdRoom ? `Apply to ${tdCount}` : 'Daily cap reached'"></button>
+          <div class="seg" style="width:300px"><button :class="{on: tdMode==='auto'}" @click="tdMode='auto'">Submit for me</button><button :class="{on: tdMode==='review'}" @click="tdMode='review'">Let me check each</button></div>
+        </div>
+      </template>
+      <template x-if="tdPhase==='applying'">
+        <div class="row"><button class="btn" @click="go('live')"><span class="live-dot"></span> Watch live</button><button class="btn" @click="tdPhase='pick'; loadToday(true)">Apply to more</button></div>
+      </template>
+    </div>
+  </div>
+
+  <template x-if="tdPhase==='applying'">
+    <div class="card stats" style="margin-top:18px">
+      <div class="stat"><span class="big" x-text="(td.progress.queued||0)+(td.progress.applying||0)"></span><span class="lbl">in progress</span><div class="sub">One at a time, with short pauses</div></div>
+      <div class="stat"><span class="big" x-text="(td.progress.submitted||0)+(td.progress.confirmed||0)+(td.progress.replied||0)+(td.progress.interview||0)"></span><span class="lbl">sent</span><div class="sub">Proof saved for each</div></div>
+      <div class="stat"><span class="big" x-text="(td.progress.needs_you||0)+(td.progress.review||0)"></span><span class="lbl">need you</span><div class="sub"><a href="#applications" @click.prevent="af.status='needs_you'; go('applications')">Answer them →</a></div></div>
+      <div class="stat"><span class="big" x-text="(td.progress.failed||0)+(td.progress.skipped||0)+(td.progress.dry_run||0)"></span><span class="lbl">skipped or failed</span><div class="sub">Retry from Applications</div></div>
+    </div>
+  </template>
+
+  <template x-if="tdPhase==='pick'">
+    <div class="card" style="margin-top:18px;padding-bottom:10px">
+      <div class="jobs-head">
+        <div class="row">
+          <label class="row small"><input type="checkbox" :checked="tdCount && tdCount===Math.min(td.jobs.length, tdRoom)" @change="tdSelectAll($event.target.checked)"> Select all</label>
+          <span class="small muted" x-text="`${tdCount} selected · best matches that can be sent end to end are ticked; “assisted” roles need you to sign in`"></span>
+        </div>
+        <div class="row small">
+          <span class="muted">Posted in</span>
+          <div class="seg"><template x-for="d in [[1,'Today'],[3,'3 days'],[7,'Week']]"><button :class="{on: tdDays===d[0]}" @click="tdDays=d[0]; loadToday(true)" x-text="d[1]"></button></template></div>
+          <button class="btn small" @click="todayStart(true)">Search again</button>
+        </div>
+      </div>
+      <div class="empty" x-show="!td.jobs.length"><div class="h2">Nothing new right now</div>Try "3 days", or press Search again later.</div>
+      <template x-for="j in td.jobs" :key="j.id">
+        <label class="job" :class="{hot: tdSel[j.id]}" style="display:block;cursor:pointer">
+          <div class="job-main">
+            <input type="checkbox" x-model="tdSel[j.id]" style="width:18px;height:18px">
+            <div class="ring"><svg width="46" height="46"><circle cx="23" cy="23" r="19" fill="none" stroke="#e7e3da" stroke-width="4"/><circle cx="23" cy="23" r="19" fill="none" :stroke="ring(j.score).color" stroke-width="4" stroke-linecap="round" :stroke-dasharray="ring(j.score).c" :stroke-dashoffset="ring(j.score).off"/></svg><span x-text="Math.round(j.score||0)"></span></div>
+            <div class="grow" style="min-width:0">
+              <div class="job-title" x-text="j.title"></div>
+              <div class="job-meta"><span x-text="j.company"></span><span class="sep">·</span><span x-text="j.location"></span><template x-for="t in tags(j)"><span><span class="sep">·</span> <span x-text="t"></span></span></template><span class="ago" x-text="opened(j.posted_at || j.first_seen)"></span></div>
+              <div class="tiny muted" style="margin-top:3px" x-text="j.reason"></div>
+            </div>
+            <span class="badge b-grey tiny" x-show="!j.auto" title="Fills the form; you press Submit">assisted</span>
+            <a class="icon-btn" :href="j.url" target="_blank" @click.stop title="Open the posting">↗</a>
+          </div>
+        </label>
+      </template>
+    </div>
+  </template>
+</section>
+
+<!-- ================= JOBS ================= -->
+<section x-show="tab==='jobs'" x-cloak>
+  <div class="card searchbar">
+    <div class="f">
+      <div class="label">Job titles</div>
+      <div class="row wrap" style="margin-top:6px">
+        <template x-for="t in (search.target_titles||[])"><span class="chip soft"><span x-text="t"></span><span style="cursor:pointer" @click="removeTitle(t)">×</span></span></template>
+        <input class="bare" style="width:200px;flex:1" placeholder="e.g. graduate engineer trainee, then Enter" x-model="titleInput" @keydown.enter="addTitle()">
+      </div>
+      <div class="tiny muted" x-show="!(search.target_titles||[]).length" style="margin-top:2px">Empty = guessed from your resume: <span x-text="(state.resume?.profile?.target_titles||[]).slice(0,4).join(', ')"></span></div>
+    </div>
+    <div class="f">
+      <div class="label">Location</div>
+      <div class="row wrap" style="margin-top:6px">
+        <button class="chip" :class="search.india ? 'on' : 'dash'" @click="saveSearch({india: !search.india})">India</button>
+        <button class="chip" :class="search.remote_india ? 'soft' : 'dash'" @click="saveSearch({remote_india: !search.remote_india})">Remote, India</button>
+        <button class="chip" :class="search.remote_worldwide ? 'soft' : 'dash'" @click="saveSearch({remote_worldwide: !search.remote_worldwide})">+ Remote, worldwide</button>
+        <button class="chip dash" @click="const a=prompt('Countries or cities abroad, comma separated', (search.abroad||[]).join(', ')); if(a!==null) saveSearch({abroad: a.split(',').map(x=>x.trim()).filter(Boolean)})">+ Roles abroad <span x-show="(search.abroad||[]).length" x-text="'('+(search.abroad||[]).length+')'"></span></button>
+      </div>
+      <input class="bare small" style="margin-top:6px" placeholder="Preferred cities (comma separated), e.g. Mumbai, Pune" :value="(search.preferred_cities||[]).join(', ')" @change="saveSearch({preferred_cities: $event.target.value.split(',').map(x=>x.trim()).filter(Boolean)})">
+    </div>
+    <button class="btn blue go" @click="jf.q=$refs.kw.value; loadJobs()">Search</button>
+  </div>
+
+  <div class="grid-side" style="margin-top:20px">
+    <div class="card pad col" style="gap:14px">
+      <div class="h3">Filters</div>
+      <input x-ref="kw" class="input" placeholder="Keyword, company…" @keydown.enter="jf.q=$event.target.value; loadJobs()">
+      <div><div class="small muted" style="margin-bottom:6px">Sort</div>
+        <div class="seg"><button :class="{on: jf.sort==='best'}" @click="jf.sort='best'; loadJobs()">Best match first</button><button :class="{on: jf.sort==='latest'}" @click="jf.sort='latest'; loadJobs()">Latest first</button></div></div>
+      <div><div class="small muted" style="margin-bottom:6px">You are</div>
+        <div class="seg"><button :class="{on: jf.exp==='fresher'}" @click="jf.exp = jf.exp==='fresher'?'':'fresher'; loadJobs()">Fresher</button><button :class="{on: jf.exp==='experienced'}" @click="jf.exp = jf.exp==='experienced'?'':'experienced'; loadJobs()">Experienced</button></div></div>
+      <div><div class="small muted" style="margin-bottom:6px">Employer type</div>
+        <div class="seg"><button :class="{on: jf.employer==='startup'}" @click="jf.employer = jf.employer==='startup'?'':'startup'; loadJobs()">Startup or scaleup</button><button :class="{on: jf.employer==='mnc'}" @click="jf.employer = jf.employer==='mnc'?'':'mnc'; loadJobs()">MNC or global</button></div></div>
+      <div><div class="small muted" style="margin-bottom:6px">Work type</div>
+        <div class="seg"><button :class="{on: jf.where==='india'}" @click="jf.where = jf.where==='india'?'':'india'; loadJobs()">On-site/hybrid</button><button :class="{on: jf.where==='remote'}" @click="jf.where = jf.where==='remote'?'':'remote'; loadJobs()">Remote</button></div></div>
+      <div><div class="small muted" style="margin-bottom:6px">Source</div>
+        <select class="input" x-model="jf.source" @change="loadJobs()"><option value="">All sources</option><template x-for="s in sources"><option :value="s" x-text="s"></option></template></select></div>
+      <div><div class="small muted row between"><span>Minimum match</span><b x-text="jf.min_score"></b></div>
+        <input type="range" min="0" max="90" step="5" x-model="jf.min_score" @change="loadJobs()" style="width:100%"></div>
+      <div><div class="small muted" style="margin-bottom:6px">Show</div>
+        <select class="input" x-model="jf.status" @change="loadJobs()"><option value="new">Open roles</option><option value="queued">Queued</option><option value="applied">Applied</option><option value="dismissed">Dismissed</option><option value="">Everything</option></select></div>
+      <hr class="sep" style="margin:4px 0">
+      <div class="small muted">Last search: <span x-text="state.discovery ? ago(state.discovery.at) : 'never'"></span><span x-show="state.discovery"> · <span x-text="state.discovery?.new"></span> new</span></div>
+      <button class="btn" @click="discover()" :disabled="state.discovering"><span class="spinner" x-show="state.discovering"></span><span x-text="state.discovering ? 'Searching…' : 'Search all sources now'"></span></button>
+    </div>
+
+    <div class="card" style="padding-bottom:10px">
+      <div class="jobs-head">
+        <div class="small muted"><b style="color:var(--ink)" x-text="jobsTotal.toLocaleString('en-IN')"></b> roles · every one from a live source</div>
+        <div class="row">
+          <span class="small muted">Apply to top</span>
+          <select class="input" style="width:70px;padding:5px 8px" x-model="applyTopN"><option>5</option><option>10</option><option>20</option><option>25</option></select>
+          <button class="btn small dark" @click="applyTop()">Queue them</button>
+        </div>
+      </div>
+      <template x-if="!jobs.length && !loadingJobs">
+        <div class="empty"><div class="h2">No roles here yet</div><div x-text="state.resume?.file ? 'Run a search, or loosen the filters.' : 'Upload your resume, then search all sources.'"></div></div>
+      </template>
+      <template x-for="(j, i) in jobs" :key="j.id">
+        <div>
+          <div class="job" :class="{hot: j.score>=75}">
+            <div class="job-main">
+              <div class="ring" :title="'Match ' + Math.round(j.score||0)">
+                <svg width="46" height="46"><circle cx="23" cy="23" r="19" fill="none" stroke="#e7e3da" stroke-width="4"/><circle cx="23" cy="23" r="19" fill="none" :stroke="ring(j.score).color" stroke-width="4" stroke-linecap="round" :stroke-dasharray="ring(j.score).c" :stroke-dashoffset="ring(j.score).off"/></svg>
+                <span x-text="Math.round(j.score||0)"></span>
+              </div>
+              <div class="logo" x-text="initials(j.company)"></div>
+              <div class="grow" style="min-width:0">
+                <div class="job-title" x-text="j.title"></div>
+                <div class="job-meta">
+                  <span x-text="j.company"></span><span class="sep">·</span><span x-text="j.location"></span>
+                  <template x-for="t in tags(j)"><span><span class="sep">·</span> <span x-text="t"></span></span></template>
+                  <span class="ago" x-text="opened(j.posted_at || j.first_seen)"></span>
+                </div>
+              </div>
+              <div class="job-actions">
+                <span class="badge b-grey tiny" x-show="!j.auto" title="Fills the form, then waits for you to submit">assisted</span>
+                <a class="icon-btn" :href="j.url" target="_blank" title="Open the posting">↗</a>
+                <button class="icon-btn" @click="dismiss(j)" title="Not for me">✕</button>
+                <button class="btn dark" @click="apply(j)" :disabled="j.status!=='new'" x-text="j.status==='new' ? 'Apply for me' : (j.status==='queued' ? 'Queued' : 'Applied')"></button>
+                <button class="icon-btn" style="border:0" @click="toggleJob(j)" x-text="openJob===j.id ? '⌃' : '⌄'"></button>
+              </div>
+            </div>
+            <div class="job-more" x-show="openJob===j.id" x-cloak>
+              <div><b style="color:var(--ink)">Why this score:</b> <span x-text="j.reason"></span></div>
+              <div class="bars">
+                <template x-for="k in ['skills','tfidf','title','location','level','fresh']">
+                  <div class="bar"><div class="k" x-text="{skills:'Skills',tfidf:'Text match',title:'Title',location:'Location',level:'Level',fresh:'Fresh'}[k]"></div><div class="v"><i :style="`width:${(j.breakdown[k]||0)*100}%`"></i></div></div>
+                </template>
+              </div>
+              <div class="row small" style="margin-bottom:8px;gap:14px">
+                <span>Source: <b x-text="credit(j)"></b></span><span>Form: <b x-text="j.ats"></b></span>
+                <span x-show="j.llm_score!=null">AI score: <b x-text="j.llm_score"></b></span>
+                <button class="btn small" @click="apply(j,'dry-run')">Dry run</button>
+                <button class="btn small" @click="apply(j,'auto')" x-show="j.auto">Apply and submit</button>
+              </div>
+              <div class="desc" x-text="jobDesc[j.id] || 'Loading…'"></div>
+            </div>
+          </div>
+          <template x-if="i===4"><div class="tip">💡 <span><b>Tip</b> One application rarely lands a job. A <u>steady stream of them</u> usually does: 50+ applications is where shortlists start.</span></div></template>
+        </div>
+      </template>
+      <div style="text-align:center;padding:16px" x-show="jobs.length < jobsTotal"><button class="btn" @click="more()">Show more</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= APPLICATIONS ================= -->
+<section x-show="tab==='applications' && !detail" x-cloak>
+  <div class="row between wrap" style="margin-bottom:18px">
+    <div><h1 class="h1"><span x-text="appTotal"></span> applications<span class="hl">. All in one place.</span></h1>
+      <div class="muted" style="margin-top:6px">Every application, its proof, and what the company said.</div></div>
+    <input class="input" style="width:280px" placeholder="🔍 Search company or role" x-model="af.q" @input.debounce.300ms="loadApps()">
+  </div>
+  <div class="card stats">
+    <div class="stat"><span class="big" x-text="appStats.sent_week||0"></span><span class="lbl">sent this week</span><div class="sub" x-text="`${(appStats.sent_week||0)-(appStats.sent_prev_week||0) >= 0 ? (appStats.sent_week||0)-(appStats.sent_prev_week||0)+' more' : (appStats.sent_prev_week||0)-(appStats.sent_week||0)+' fewer'} than last week`"></div></div>
+    <div class="stat"><span class="big" x-text="appStats.companies||0"></span><span class="lbl">companies have your resume</span></div>
+    <div class="stat"><span class="big" x-text="(appStats.new_roles_week||0).toLocaleString('en-IN')"></span><span class="lbl">new roles for you</span><div class="sub"><a href="#jobs" @click.prevent="go('jobs')">Posted this week. Apply →</a></div></div>
+    <div class="stat"><span class="big" x-text="Math.round(appStats.hours_saved||0)"></span><span class="lbl">hours saved</span><div class="sub">About 35 min an application</div></div>
+  </div>
+  <div class="row wrap" style="margin:18px 0 14px">
+    <template x-for="s in [['','All'],['applying','Applying'],['review','Ready to submit'],['needs_you','Needs you'],['submitted','Submitted'],['confirmed','Confirmed'],['replied','Replied'],['interview','Interview'],['rejected','Not selected'],['failed','Failed']]">
+      <button class="chip" :class="{on: af.status===s[0]}" @click="af.status=s[0]; loadApps()"><span x-text="s[1]"></span><span class="n" x-text="s[0] ? (appCounts[s[0]]||0) : appTotal"></span></button>
+    </template>
+  </div>
+  <div class="card">
+    <table class="t">
+      <thead><tr><th>Role</th><th>Status</th><th>Latest</th><th style="text-align:right">Updated</th></tr></thead>
+      <tbody>
+        <template x-for="a in apps" :key="a.id">
+          <tr class="click" @click="go('applications/'+a.id)">
+            <td><div class="row"><div class="logo" x-text="initials(a.company)"></div><div><div style="font-weight:600" x-text="a.title"></div><div class="small muted" x-text="a.company"></div></div></div></td>
+            <td><span class="badge" :class="statusBadge(a.status)[1]" x-text="statusBadge(a.status)[0]"></span></td>
+            <td class="small" style="color:var(--ink-2);max-width:340px" x-text="a.latest"></td>
+            <td class="small muted" style="text-align:right;white-space:nowrap"><span x-text="ago(a.updated_at)"></span> ›</td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+    <div class="empty" x-show="!apps.length"><div class="h2">Nothing yet</div>Press <b>Apply for me</b> on a job, or switch on Auto-apply.</div>
+  </div>
+</section>
+
+<!-- ================= APPLICATION DETAIL ================= -->
+<section x-show="tab==='applications' && detail" x-cloak>
+<template x-if="detail">
+<div>
+  <a href="#applications" @click.prevent="closeApp()" style="font-weight:600;color:var(--ink)">← All applications</a>
+  <div class="row between" style="margin:16px 0 18px;align-items:flex-start">
+    <div class="row" style="gap:14px;align-items:flex-start">
+      <div class="logo" style="width:52px;height:52px;font-size:20px" x-text="initials(detail.job.company)"></div>
+      <div><h1 class="h1" style="font-size:30px"><span x-text="headline(detail)[0]"></span> <span class="hl" x-text="headline(detail)[1]"></span></h1>
+        <div class="muted" style="margin-top:4px"><b style="color:var(--ink)" x-text="detail.job.title"></b> · <span x-text="ago(detail.application.started_at)"></span> · <span x-text="detail.application.mode"></span> mode</div></div>
+    </div>
+    <span class="badge" :class="statusBadge(detail.application.status)[1]" x-text="statusBadge(detail.application.status)[0]"></span>
+  </div>
+
+  <div class="card steps">
+    <template x-for="(s, i) in timeline(detail)">
+      <div class="row" style="flex:1;gap:14px" :style="i===3 ? 'flex:0' : ''">
+        <div class="step" :class="{done: s.done, cur: s.cur}"><div class="ck" x-text="s.done ? '✓' : (s.cur ? '!' : i+1)"></div><div><div class="w" x-text="s.w"></div><div class="when" x-text="s.e ? when(s.e.at) : ''"></div></div></div>
+        <div class="ln" :class="{done: s.done}" x-show="i<3"></div>
+      </div>
+    </template>
+  </div>
+
+  <div class="grid2" style="margin-top:20px">
+    <div class="col" style="gap:20px">
+      <!-- needs you -->
+      <template x-if="['needs_you','review'].includes(detail.application.status)">
+        <div class="card pad" style="border-color:#f3d6a4;background:#fffaf2">
+          <div class="h2" x-text="detail.application.status==='review' ? 'Filled. Check it and submit.' : 'This one needs you'"></div>
+          <p class="small" style="color:var(--ink-2)" x-text="detail.application.error || 'The form is filled and waiting for your review.'"></p>
+          <template x-if="detail.questions.length">
+            <div class="col">
+              <template x-for="q in detail.questions"><div><div class="small" style="font-weight:600" x-text="q"></div><input class="input" x-model="answersDraft[q]" placeholder="Your answer (saved for next time)"></div></template>
+              <div><button class="btn dark" @click="appAction(detail.application.id,'answers',{answers: answersDraft})">Save answers and retry</button></div>
+            </div>
+          </template>
+          <div class="row wrap" style="margin-top:12px">
+            <button class="btn blue" x-show="detail.live && detail.application.status==='review'" @click="appAction(detail.application.id,'submit')">Submit now</button>
+            <button class="btn" x-show="detail.live" @click="watch(detail.application.id)"><span class="live-dot"></span> Watch / take over</button>
+            <button class="btn" x-show="!detail.live" @click="appAction(detail.application.id,'retry')">Retry</button>
+            <button class="btn" x-show="!detail.live" @click="appAction(detail.application.id,'retry',{mode:'review'})">Retry and let me review</button>
+            <button class="btn ghost" @click="appAction(detail.application.id,'cancel')">Cancel</button>
+          </div>
+        </div>
+      </template>
+
+      <div class="card pad row between">
+        <div><div class="h2">The posting you applied to</div><a href="#" @click.prevent="showDesc=true" style="font-weight:600;display:inline-block;margin-top:8px">Read the description we saved</a></div>
+        <a :href="detail.job.url" target="_blank" style="font-weight:600">Open the original posting</a>
+      </div>
+
+      <div class="card pad">
+        <div class="h2" style="margin-bottom:14px">Proof it went in</div>
+        <div class="proof">
+          <div class="shot"><div class="cap">The form we sent</div>
+            <template x-if="shot(detail,'form_filled')"><a class="img" @click="lightbox=shot(detail,'form_filled')"><img :src="shot(detail,'form_filled')" alt="Filled form"></a></template>
+            <template x-if="!shot(detail,'form_filled')"><div class="none">Not filled yet</div></template></div>
+          <div class="shot"><div class="cap">Their confirmation page</div>
+            <template x-if="shot(detail,'submitted')"><a class="img" @click="lightbox=shot(detail,'submitted')"><img :src="shot(detail,'submitted')" alt="Confirmation page"></a></template>
+            <template x-if="!shot(detail,'submitted')"><div class="none">Not submitted yet</div></template></div>
+        </div>
+        <template x-if="Object.keys(detail.application.answers||{}).length">
+          <details style="margin-top:14px"><summary class="small" style="cursor:pointer;font-weight:600">Answers we sent (<span x-text="Object.keys(detail.application.answers).length"></span>)</summary>
+            <div class="kv" style="margin-top:10px"><template x-for="(v,k) in detail.application.answers"><div style="display:contents"><div x-text="k"></div><div x-text="v"></div></div></template></div>
+          </details>
+        </template>
+      </div>
+
+      <div class="card pad">
+        <div class="h3" style="margin-bottom:8px">Everything that happened</div>
+        <div class="events"><template x-for="e in detail.events"><div class="ev"><span class="at" x-text="when(e.at)"></span><span :style="e.level==='warning' ? 'color:var(--warn)' : e.level==='error' ? 'color:var(--bad)' : ''" x-text="e.message"></span></div></template></div>
+      </div>
+    </div>
+
+    <div class="col" style="gap:16px">
+      <div class="card pad">
+        <div class="row between"><span class="badge" :class="statusBadge(detail.application.status)[1]" x-text="statusBadge(detail.application.status)[0]"></span><span class="small muted" x-text="ago(detail.application.updated_at)"></span></div>
+        <p class="small" style="margin:12px 0" x-show="detail.application.status==='confirmed'"><b>Your application is in.</b> <span class="muted">They confirmed they received it. Nothing for you to do; the Tracker will show their reply.</span></p>
+        <p class="small" style="margin:12px 0" x-show="detail.application.status==='submitted'"><b>Sent.</b> <span class="muted">Waiting for the company's confirmation email<span x-show="!state.inbox?.configured"> (connect your inbox in Settings to see it here)</span>.</span></p>
+        <template x-for="m in detail.emails.slice(0,1)">
+          <div class="mail"><div style="font-weight:700" x-text="m.subject"></div><div class="small muted" x-text="m.from_name || m.from_addr"></div><div class="small" style="margin-top:8px;color:var(--ink-2);max-height:90px;overflow:hidden" x-text="m.snippet"></div></div>
+        </template>
+        <button class="btn" style="margin-top:12px" x-show="detail.emails.length" @click="go('tracker')">Open in inbox</button>
+      </div>
+      <div class="card pad"><div class="row between"><b>Match score</b><b x-text="Math.round(detail.job.score||0)"></b></div><div class="small muted" style="margin-top:6px" x-text="detail.job.reason"></div></div>
+      <div class="card pad col">
+        <b>Mark as</b>
+        <div class="row wrap"><template x-for="s in ['confirmed','interview','rejected']"><button class="btn small" @click="markStatus(detail.application.id, s)" x-text="statusBadge(s)[0]"></button></template></div>
+      </div>
+      <div class="row"><button class="btn" @click="closeApp()">All applications</button><button class="btn" @click="appAction(detail.application.id,'retry')">Report a problem: retry</button></div>
+    </div>
+  </div>
+
+  <div class="modal" x-show="showDesc" @click.self="showDesc=false" x-cloak><div class="box"><div class="row between"><div class="h2" x-text="detail.job.title + ' · ' + detail.job.company"></div><button class="icon-btn" @click="showDesc=false">✕</button></div><div class="small muted" style="margin:6px 0 12px" x-text="detail.job.location"></div><div class="desc" style="max-height:none" x-text="detail.job.description"></div></div></div>
+</div>
+</template>
+</section>
+
+<!-- ================= TRACKER ================= -->
+<section x-show="tab==='tracker'" x-cloak>
+  <div class="row between" style="margin-bottom:16px">
+    <div><h1 class="h1" style="font-size:28px">Tracker</h1><div class="small muted row" style="gap:6px;margin-top:4px"><span class="live-dot" style="background:var(--good)" x-show="inboxConfigured"></span><span x-text="inboxConfigured ? 'Updates the moment a company writes back (checked every 5 minutes)' : 'Inbox not connected'"></span></div></div>
+    <div class="seg" style="width:220px"><button :class="{on: trackerView==='inbox'}" @click="trackerView='inbox'; loadMails()">Inbox</button><button :class="{on: trackerView==='pipeline'}" @click="trackerView='pipeline'; loadPipeline()">Pipeline</button></div>
+  </div>
+
+  <template x-if="!inboxConfigured && trackerView==='inbox'">
+    <div class="card pad"><div class="h2">Connect your inbox</div>
+      <p style="color:var(--ink-2)">The Tracker reads company replies from your Gmail, read-only. Only emails that match one of your applications are kept.</p>
+      <ol style="color:var(--ink-2);line-height:1.8"><li>Turn on 2-step verification on your Google account.</li><li>Create an App Password at <a href="https://myaccount.google.com/apppasswords" target="_blank">myaccount.google.com/apppasswords</a>.</li><li>Open <span class="mono">.env</span> in the project folder and set <span class="mono">IMAP_USER</span> (your Gmail) and <span class="mono">IMAP_PASSWORD</span> (the app password).</li><li>Restart <span class="mono">run.bat</span>.</li></ol>
+    </div>
+  </template>
+
+  <template x-if="trackerView==='inbox' && inboxConfigured">
+    <div class="card" style="overflow:hidden">
+      <div class="row between wrap" style="padding:14px 16px;border-bottom:1px solid var(--line)">
+        <div class="row wrap">
+          <button class="chip" :class="{on: !mf.category}" @click="mf.category=''; loadMails()">All <span class="n" x-text="mailTotal"></span></button>
+          <template x-for="c in ['confirmed','assessment','interview','rejected','other']"><button class="chip" x-show="mailCounts[c]" :class="{on: mf.category===c}" @click="mf.category=c; loadMails()"><span x-text="catBadge(c)[0]"></span><span class="n" x-text="mailCounts[c]"></span></button></template>
+        </div>
+        <div class="row"><input class="input" style="width:300px" placeholder="Search sender, subject or message" x-model="mf.q" @input.debounce.300ms="loadMails()"><button class="icon-btn" @click="refreshInbox()" title="Check now">⟳</button></div>
+      </div>
+      <div class="tracker">
+        <div class="list">
+          <template x-for="m in mails" :key="m.id">
+            <div class="mrow" :class="{on: mail && mail.id===m.id, unread: !m.is_read}" @click="openMail(m)">
+              <div class="logo" x-text="initials(m.company || m.from_name)"></div>
+              <div class="grow" style="min-width:0">
+                <div class="row between"><div class="s" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" x-text="m.title ? `${m.title}, ${m.company}` : (m.from_name || m.from_addr)"></div><span class="tiny muted" x-text="ago(m.at)"></span></div>
+                <div class="row between" style="margin-top:4px"><span class="small muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" x-text="m.subject"></span><span class="badge tiny" :class="catBadge(m.category)[1]" x-text="catBadge(m.category)[0]"></span></div>
+              </div>
+            </div>
+          </template>
+          <div class="small muted" style="padding:16px">Only mails about your applications are kept here. Sign-in codes, newsletters and personal mail stay in Gmail.</div>
+        </div>
+        <div class="reader">
+          <template x-if="mail">
+            <div>
+              <h1 class="h1" style="font-size:28px"><span x-text="mail.job ? `${mail.job.title} at ${mail.job.company}.` : mail.subject"></span> <span class="hl" x-show="mail.job" x-text="{confirmed:'They confirmed.',interview:'They want to talk.',assessment:'A test is waiting.',rejected:'Not this time.',other:'An update.'}[mail.category]"></span></h1>
+              <div class="small" style="margin-top:6px" x-show="mail.job"><a href="#" @click.prevent="go('applications/'+mail.application_id)">See the application</a> · <a :href="mail.job?.url" target="_blank">See the posting you applied to</a></div>
+              <template x-if="mail.timeline && mail.timeline.length">
+                <div class="card row" style="padding:14px 18px;margin:16px 0;gap:30px"><template x-for="t in mail.timeline"><div class="row"><span style="width:14px;height:14px;border-radius:50%;background:var(--good);display:inline-block"></span><div><b x-text="t.step[0].toUpperCase()+t.step.slice(1)"></b><div class="tiny muted" x-text="when(t.at)"></div></div></div></template></div>
+              </template>
+              <div class="card pad" style="margin-top:12px">
+                <div class="row between"><div class="row"><div class="logo" x-text="initials(mail.from_name || mail.from_addr)"></div><div><b x-text="mail.from_name || mail.from_addr"></b><div class="tiny muted" x-text="`${mail.from_addr}, ${when(mail.at)}`"></div></div></div><span class="badge" :class="catBadge(mail.category)[1]" x-text="catBadge(mail.category)[0]"></span></div>
+                <div style="font-weight:700;margin:14px 0 8px" x-text="mail.subject"></div>
+                <div style="white-space:pre-wrap;color:var(--ink-2);font-size:13.5px" x-text="mail.body"></div>
+                <div class="tiny muted" style="margin-top:12px" x-show="/no-?reply/i.test(mail.from_addr)">No reply on this one: it came from <span x-text="mail.from_addr"></span>, where nobody reads replies.</div>
+              </div>
+            </div>
+          </template>
+          <template x-if="!mail"><div class="empty">No company emails yet. They show up here once you have applied.</div></template>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <template x-if="trackerView==='pipeline'">
+    <div class="kanban">
+      <template x-for="(items, col) in pipelineCols">
+        <div class="kcol" x-show="items.length || ['submitted','confirmed','interview'].includes(col)">
+          <div class="row between"><b class="small" x-text="statusBadge(col)[0]"></b><span class="tiny muted" x-text="items.length"></span></div>
+          <template x-for="a in items"><div class="kcard" @click="go('applications/'+a.id)"><b x-text="a.title"></b><div class="tiny muted" x-text="a.company + ' · ' + ago(a.updated_at)"></div></div></template>
+        </div>
+      </template>
+    </div>
+  </template>
+</section>
+
+<!-- ================= LIVE ================= -->
+<section x-show="tab==='live'" x-cloak>
+  <div class="row between" style="margin-bottom:16px">
+    <div><h1 class="h1" style="font-size:28px">Live browsers</h1><div class="small muted">Every application runs in a real browser you can watch. Take over to solve a captcha, sign in, or answer a question.</div></div>
+    <div class="small muted">Queue: <b x-text="state.queue||0"></b></div>
+  </div>
+  <div class="live-grid">
+    <template x-for="s in sessions" :key="s.id">
+      <div class="card tile">
+        <div class="screen" @click="openLive(s)"><canvas :data-sid="s.id"></canvas></div>
+        <div class="bar">
+          <div class="row between"><b class="small" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" x-text="s.label"></b><span class="badge tiny" :class="s.state==='waiting' ? 'b-warn' : 'b-blue'"><span class="live-dot" x-show="s.state!=='waiting'"></span><span x-text="s.state==='waiting' ? 'Waiting for you' : 'Running'"></span></span></div>
+          <div class="tiny muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" x-text="s.step"></div>
+          <div class="row"><button class="btn small" @click="openLive(s)">Open</button><button class="btn small" x-show="s.application_id" @click="go('applications/'+s.application_id)">Application</button><button class="btn small ghost" @click="closeSession(s)">Stop</button></div>
+        </div>
+      </div>
+    </template>
+  </div>
+  <div class="card empty" x-show="!sessions.length"><div class="h2">No browsers running</div>When an application starts, its browser appears here live.</div>
+
+  <div class="modal" x-show="liveBig" x-cloak @click.self="closeLive()">
+    <template x-if="liveBig">
+      <div class="box" style="max-width:1180px;padding:16px">
+        <div class="row between" style="margin-bottom:10px">
+          <div style="min-width:0"><b x-text="liveBig.label"></b><div class="tiny muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:700px" x-text="liveBig.url"></div></div>
+          <div class="row">
+            <button class="btn small" :class="liveBig.taken_over ? 'blue' : 'dark'" @click="takeover(liveBig, !liveBig.taken_over)" x-text="liveBig.taken_over ? 'Hand back to the bot' : 'Take over'"></button>
+            <button class="btn small blue" x-show="liveBig.application_id && (state.parked||[]).includes(liveBig.application_id)" @click="appAction(liveBig.application_id,'submit')">Submit</button>
+            <button class="btn small ghost" @click="closeSession(liveBig)">Stop</button>
+            <button class="icon-btn" @click="closeLive()">✕</button>
+          </div>
+        </div>
+        <div class="big-screen" :class="{taken: liveBig.taken_over}"><canvas :data-sid="liveBig.id" data-big="1"></canvas></div>
+        <div class="small muted" style="margin-top:8px" x-text="liveBig.taken_over ? 'You have control: click, scroll and type into the screen. The bot is paused.' : 'Watching. Press Take over to click and type yourself.'"></div>
+      </div>
+    </template>
+  </div>
+</section>
+
+<!-- ================= RESUME ================= -->
+<section x-show="tab==='resume'" x-cloak>
+  <template x-if="!resume.struct">
+    <div class="col" style="max-width:640px;margin:40px auto">
+      <h1 class="h1">Your resume, <span class="hl">read once.</span></h1>
+      <p class="muted">Upload a PDF or DOCX. It is parsed on this computer, every job is ranked against it, and it is the file sent with each application.</p>
+      <label class="drop" :class="{over: dragOver}" @dragover.prevent="dragOver=true" @dragleave="dragOver=false" @drop.prevent="dragOver=false; uploadResume($event.dataTransfer.files[0])">
+        <input type="file" accept=".pdf,.docx,.txt" hidden @change="uploadResume($event.target.files[0])">
+        <div class="h2" x-text="uploading ? 'Reading your resume…' : 'Drop your resume here'"></div><div class="muted small">or click to choose a file</div>
+      </label>
+    </div>
+  </template>
+
+  <template x-if="resume.struct">
+    <div class="col" style="gap:24px">
+      <div class="resume-wrap">
+        <div>
+          <template x-if="upgrade">
+            <div class="card pad" style="margin-bottom:14px;border-color:#cfdaf8;background:#f7f9ff">
+              <div class="row between"><b>Upgrade ready. This is a preview; nothing is saved yet.</b><div class="row"><button class="btn small blue" @click="draft('accept')">Keep it</button><button class="btn small" @click="draft('discard')">Discard</button></div></div>
+              <ul class="small" style="color:var(--ink-2);margin:10px 0 0 18px"><template x-for="c in upgrade.changes"><li x-text="c"></li></template></ul>
+            </div>
+          </template>
+          <div class="paper" id="paper" x-html="upgrade ? draftHtml : resumeHtml"></div>
+        </div>
+        <div class="col" style="gap:14px;position:sticky;top:84px">
+          <div><div class="row between"><div class="h2" style="font-size:17px;word-break:break-all" x-text="resume.file"></div>
+            <label style="color:var(--accent);font-weight:600;cursor:pointer;font-size:13px">Replace<input type="file" accept=".pdf,.docx,.txt" hidden @change="uploadResume($event.target.files[0])"></label></div>
+            <div class="small muted">Built the way ATS software reads a resume. Click any line to edit it; Enter saves.</div></div>
+          <div class="card pad col">
+            <textarea class="input" placeholder="Anything new? A job, a project, skills. Optional." x-model="notes"></textarea>
+            <button class="btn blue" style="justify-content:center;padding:11px" @click="doUpgrade()" :disabled="upgrading || !state.llm?.enabled"><span class="spinner" x-show="upgrading"></span>✦ Upgrade my resume</button>
+            <div class="tiny muted" x-text="state.llm?.enabled ? 'Fixes mistakes and adds the keywords your top matches ask for, only where your resume backs them up.' : 'Needs an LLM: set LLM_MODEL and LLM_API_KEY in .env.'"></div>
+          </div>
+          <div class="card pad">
+            <b class="small">Format</b>
+            <div class="tpl-grid" style="margin-top:10px">
+              <template x-for="(t, k) in resume.templates"><button class="tpl" :class="{on: tpl===k}" @click="pickTpl(k)"><b x-text="t.name"></b><span x-text="t.note"></span></button></template>
+            </div>
+          </div>
+          <div class="row"><button class="btn blue grow" style="justify-content:center;padding:11px" @click="saveResume(true)" :disabled="savingResume"><span class="spinner" x-show="savingResume"></span>Save and use</button><button class="btn" style="padding:11px 18px" @click="saveResume(false)">Save</button></div>
+          <div class="tiny muted">Save and use: makes a PDF in this format; it is the file every application uploads. <span x-show="resume.pdf">Now using <a href="/api/resume/pdf" target="_blank" x-text="resume.pdf"></a>.</span></div>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div class="col" style="gap:16px">
+          <div class="card pad col">
+            <div class="h2">What we read</div>
+            <div class="kv">
+              <div>Level</div><div><select class="input" style="padding:5px" :value="resume.profile?.seniority" @change="saveResumeProfile({seniority: $event.target.value})"><option>fresher</option><option>junior</option><option>mid</option><option>senior</option></select></div>
+              <div>Experience</div><div><span x-text="resume.profile?.years_experience"></span> years</div>
+              <div>Target titles</div><div x-text="(resume.profile?.target_titles||[]).join(', ')"></div>
+            </div>
+            <div><template x-for="s in (resume.profile?.skills||[])"><span class="skill" x-text="s"></span></template></div>
+          </div>
+          <div class="card pad col">
+            <div class="h2">Saved answers</div>
+            <div class="small muted">Answers given once are reused on similar questions.</div>
+            <template x-for="a in answerBank.slice(0,40)">
+              <div style="border-top:1px solid var(--line-2);padding-top:8px"><div class="small" style="font-weight:600" x-text="a.label"></div>
+                <div class="row"><input class="input small" x-model="a.answer" @change="saveAnswer(a)"><span class="badge tiny b-grey" x-text="a.source"></span><button class="icon-btn" style="width:26px;height:26px" @click="delAnswer(a)">✕</button></div></div>
+            </template>
+            <div class="small muted" x-show="!answerBank.length">None yet.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </template>
+</section>
+
+<!-- ================= SETTINGS ================= -->
+
+<!-- ================= PROFILE: info.txt + every detail used on forms ================= -->
+<section x-show="tab==='profile'" x-cloak>
+  <h1 class="h1" style="font-size:28px;margin-bottom:6px">Profile</h1>
+  <div class="muted" style="margin-bottom:18px">Everything forms are filled from, in one place. <b>info.txt</b> wins over the rest; then these details; then your resume.</div>
+  <div class="grid2">
+    <div class="card pad col">
+      <div class="row"><div class="h2 grow">info.txt</div><span class="tiny muted" x-text="infoTxt.path"></span></div>
+      <div class="small muted">Write <code>Key: value</code>, one per line. A long address can carry on to the next lines. Any extra line like <code>Father's name: …</code> answers that question when a form asks it. You can also edit the file in Notepad; changes are picked up straight away.</div>
+      <textarea class="input mono" style="min-height:460px" x-model="infoTxt.text" @input="infoDirty=true"></textarea>
+      <div class="row"><button class="btn dark" @click="saveInfo()" :disabled="!infoDirty">Save info.txt</button><span class="tiny muted" x-show="!infoDirty">Saved</span></div>
+      <div class="small" x-show="Object.keys(infoTxt.used||{}).length"><b>Being used:</b> <span class="muted" x-text="Object.keys(infoTxt.used||{}).length + ' details'"></span><span class="muted" x-show="Object.keys(infoTxt.extra||{}).length" x-text="' + ' + Object.keys(infoTxt.extra||{}).length + ' extra answers (' + Object.keys(infoTxt.extra||{}).slice(0,5).join(', ') + ')'"></span></div>
+    </div>
+        <div class="card pad col">
+          <div class="h2">Details used on forms</div>
+          <div class="small muted">Every form is filled from these. Most were read from your resume; fill the highlighted blanks once.</div>
+          <div class="row"><button class="btn small" @click="fillFromResume()">Re-read from resume</button><span class="tiny muted" x-show="pf.missing?.length" x-text="`${pf.missing?.length} important ones still blank`"></span></div>
+          <template x-for="g in (pf.groups||[])">
+            <div class="col" style="gap:8px">
+              <b class="small" x-text="g.title" style="margin-top:6px"></b>
+              <div class="pf-grid">
+                <template x-for="f in g.fields">
+                  <label class="pf-field" :class="{wide: f.kind==='textarea', blank: f.kind!=='bool' && (f.value===''||f.value===null)}">
+                    <span class="tiny"><span x-text="f.label"></span><span class="badge tiny b-grey" style="margin-left:4px" x-show="f.from_info">info.txt</span></span>
+                    <template x-if="f.kind==='textarea'"><textarea class="input small" rows="4" x-model="f.value" :placeholder="f.hint" :disabled="f.from_info" @input="pfDirty=true"></textarea></template>
+                    <template x-if="f.kind==='bool'"><span><label class="switch"><input type="checkbox" x-model="f.value" @change="pfDirty=true"><span class="t"></span></label></span></template>
+                    <template x-if="f.kind.startsWith('select:')"><select class="input small" x-model="f.value" @change="pfDirty=true"><template x-for="o in f.kind.slice(7).split('/')"><option :value="o" x-text="o"></option></template></select></template>
+                    <template x-if="f.kind==='text'||f.kind==='number'"><input class="input small" :type="f.kind==='number'?'number':'text'" x-model="f.value" :placeholder="f.hint" :disabled="f.from_info" @input="pfDirty=true"></template>
+                  </label>
+                </template>
+              </div>
+            </div>
+          </template>
+          <div class="row"><button class="btn dark" @click="saveProfileForm()" :disabled="!pfDirty">Save details</button><span class="tiny muted" x-show="!pfDirty">All saved</span></div>
+          <details><summary class="small" style="cursor:pointer">Advanced: everything as text (work authorisation, diversity answers, custom answers, search)</summary>
+            <textarea class="input mono" style="min-height:380px;margin-top:8px" x-model="profileYaml"></textarea>
+            <div style="margin-top:8px"><button class="btn" @click="saveProfile()">Save text</button></div>
+          </details>
+        </div>
+  </div>
+</section>
+
+<section x-show="tab==='settings'" x-cloak>
+  <h1 class="h1" style="font-size:28px;margin-bottom:18px">Settings</h1>
+  <div class="grid2">
+    <div class="col" style="gap:16px">
+      <div class="card pad col">
+        <div class="h2">Applying</div>
+        <div class="kv" style="align-items:center">
+          <div>Auto-apply</div><div><label class="switch"><input type="checkbox" :checked="settings.auto_apply_enabled" @change="toggleAuto($event.target.checked)"><span class="t"></span><span x-text="settings.auto_apply_enabled ? 'On' : 'Off'"></span></label></div>
+          <div>Mode</div><div><select class="input" :value="settings.apply_mode" @change="saveSettings({apply_mode: $event.target.value})"><option value="review">Review: fill, then wait for my Submit</option><option value="auto">Auto: submit by itself</option><option value="dry-run">Dry run: fill, never submit</option></select></div>
+          <div>Minimum match</div><div><input class="input" type="number" min="0" max="100" :value="settings.min_score_to_apply" @change="saveSettings({min_score_to_apply: +$event.target.value})"></div>
+          <div>Daily cap</div><div><input class="input" type="number" min="1" max="200" :value="settings.daily_apply_cap" @change="saveSettings({daily_apply_cap: +$event.target.value})"></div>
+          <div>Same company gap</div><div><input class="input" type="number" min="0" :value="settings.company_cooldown_days" @change="saveSettings({company_cooldown_days: +$event.target.value})"> <span class="tiny muted">days</span></div>
+          <div>Browsers at once</div><div><input class="input" type="number" min="1" max="4" :value="settings.workers" @change="saveSettings({workers: +$event.target.value})"> <span class="tiny muted">restart to apply</span></div>
+          <div>Sign in to sites</div><div class="col" style="gap:6px"><div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn small" @click="signIn()">Google</button><button class="btn small" @click="signIn('https://www.linkedin.com/login')">LinkedIn</button><button class="btn small" @click="signInUrl()">Other site…</button></div><span class="tiny muted"><span x-show="state.signin?.open"><b>Window open:</b> sign in, then close it. </span>Opens a normal browser on the app's own profile. Sign in once; every application reuses it.</span></div>
+          <div>Show browser windows</div><div><label class="switch"><input type="checkbox" :checked="!settings.headless" @change="saveSettings({headless: !$event.target.checked})"><span class="t"></span></label></div>
+        </div>
+      </div>
+      <div class="card pad col">
+        <div class="row between"><div class="h2">Job sources</div><button class="btn small" @click="discover()" :disabled="state.discovering" x-text="state.discovering ? 'Searching…' : 'Search now'"></button></div>
+        <div class="small muted">Searched every <input class="input" type="number" style="width:60px;padding:3px 6px" :value="settings.discovery_interval_hours" @change="saveSettings({discovery_interval_hours: +$event.target.value})"> hours. Last run: <span x-text="state.discovery ? `${ago(state.discovery.at)}, ${state.discovery.fetched} fetched, ${state.discovery.relevant} in your locations, ${state.discovery.new} new, ${state.discovery.seconds}s` : 'never'"></span></div>
+        <table class="t"><thead><tr><th>Source</th><th>Last fetch</th><th>On</th></tr></thead><tbody>
+          <template x-for="(on, name) in settings.sources||{}">
+            <tr><td><b x-text="name"></b><div class="tiny" style="color:var(--bad)" x-text="state.discovery?.sources?.[name]?.last_error || ''"></div></td>
+              <td class="small" x-text="state.discovery?.sources?.[name] ? state.discovery.sources[name].fetched + ' jobs' : (['adzuna','jooble','jsearch'].includes(name) ? 'needs a free key in .env' : '—')"></td>
+              <td><label class="switch"><input type="checkbox" :checked="on" @change="saveSettings({sources: {[name]: $event.target.checked}})"><span class="t"></span></label></td></tr>
+          </template></tbody></table>
+        <div class="tiny muted">Company boards live in <span class="mono">config/companies.yaml</span>. Re-run <span class="mono">tools\build_companies.py</span> after adding candidates.</div>
+      </div>
+    </div>
+    <div class="col" style="gap:16px">
+      <div class="card pad col">
+        <div class="h2">AI model</div>
+        <div class="kv"><div>Status</div><div><span class="badge" :class="state.llm?.enabled ? 'b-good' : 'b-grey'" x-text="state.llm?.enabled ? 'Configured' : 'Off (rules only)'"></span></div>
+          <div>Model</div><div class="mono" x-text="state.llm?.model || '—'"></div><div>Endpoint</div><div class="mono" style="word-break:break-all" x-text="state.llm?.base_url"></div>
+          <div>Tokens today</div><div x-text="(state.llm?.tokens_today||0).toLocaleString() + ' / ' + (settings.llm_daily_token_budget||0).toLocaleString()"></div></div>
+        <div class="row"><button class="btn small" @click="testLLM()">Test connection</button><span class="small" x-show="llmPing" x-text="llmPing?.pending ? 'Testing…' : (llmPing?.ok ? '✓ Works' : '✕ ' + (llmPing?.error || 'No valid reply'))"></span></div>
+        <div class="tiny muted">Set <span class="mono">LLM_PROVIDER</span>, <span class="mono">LLM_API_KEY</span> and <span class="mono">LLM_MODEL</span> in <span class="mono">.env</span>. Grok (xAI), Groq, OpenRouter and Ollama all work.</div>
+      </div>
+      <div class="card pad col">
+        <div class="h2">Inbox</div>
+        <div class="small"><span class="badge" :class="state.inbox?.configured ? 'b-good' : 'b-grey'" x-text="state.inbox?.configured ? 'Connected' : 'Not connected'"></span> <span class="muted" x-show="state.inbox?.last" x-text="'checked ' + ago(state.inbox?.last?.at)"></span></div>
+        <div class="tiny muted">Set <span class="mono">IMAP_USER</span> and <span class="mono">IMAP_PASSWORD</span> (a Gmail app password) in <span class="mono">.env</span>.</div>
+      </div>
+      <div class="card pad col"><div class="h2">Activity</div>
+        <div class="logbox"><template x-for="l in logs.slice().reverse()"><div :class="l.level"><span style="color:#8a857c" x-text="new Date(l.at*1000).toLocaleTimeString()"></span> <span x-text="l.message"></span></div></template></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+</div>
+
+<div class="lightbox" x-show="lightbox" x-cloak @click="lightbox=null"><img :src="lightbox"></div>
+<div class="toast" x-show="toastMsg" x-cloak x-text="toastMsg" x-transition></div>
+</body>
+</html>

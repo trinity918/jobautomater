@@ -1,0 +1,28 @@
+# ---- personal: never commit
+.env
+info.txt
+config/profile.yaml
+config/settings.yaml
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# reference screenshots and resumes
+*.jpg
+*.jpeg
+*.png
+*.pdf
+*.docx
+
+# ---- Python / tools
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.claude/
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
